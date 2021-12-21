@@ -89,7 +89,7 @@ func configureRegistry(e *EtcdRegister, opts ...Option) error {
 }
 
 func (r *EtcdRegister) heartBeat(ctx context.Context) {
-	kac, err := r.client.KeepAlive(ctx, r.leaseId)
+	kac, err := r.client.KeepAlive(context.Background(), r.leaseId)
 	if err != nil {
 		r.logger.Errorf("KeepAlive occur err:%s", err.Error())
 		return
@@ -100,9 +100,7 @@ func (r *EtcdRegister) heartBeat(ctx context.Context) {
 			if !ok {
 				continue
 			}
-		case <-ctx.Done():
-			r.logger.Infof("heartBeat Done")
-			return
+			//r.logger.Debugf("heartBeat LeaseID:%d",msg.ID)
 		}
 	}
 }
@@ -151,6 +149,7 @@ func (r *EtcdRegister) registerNode(ctx context.Context, s *Service, node *Node)
 		ctx2, cancel2 := context.WithTimeout(ctx, r.options.Timeout)
 		defer cancel2()
 		// create an entry for the node
+		r.logger.Debugf(nodePath(service.Name, node.Id))
 		_, err = r.client.Put(ctx2, nodePath(service.Name, node.Id), encode(service), clientv3.WithLease(lgr.ID))
 		if err != nil {
 			return err
@@ -181,7 +180,7 @@ func (r *EtcdRegister) Register(ctx context.Context, service *registry.ServiceIn
 	// register each node individually
 	for _, node := range service.Endpoints {
 		n := &Node{
-			Id:      uuid.New().String(),
+			Id:      service.Name + "-" + uuid.New().String(),
 			Address: node,
 		}
 		s.Nodes = append(s.Nodes, n)
@@ -227,7 +226,10 @@ func NewDiscovery(opts ...Option) *EtcdDiscovery {
 		options: Options{},
 		logger:  log.NewHelper(log.DefaultLogger),
 	}
-	configureDiscovery(e, opts...)
+	err := configureDiscovery(e, opts...)
+	if err != nil {
+		e.logger.Errorf("configureDiscovery occur err:%s", err.Error())
+	}
 	return e
 }
 
@@ -322,8 +324,8 @@ func (r *EtcdDiscovery) GetService(ctx context.Context, serviceName string) ([]*
 	services := make([]*registry.ServiceInstance, 0, len(serviceMap))
 	for _, service := range serviceMap {
 		endpoints := make([]string, len(service.Nodes))
-		for _, v := range service.Nodes {
-			endpoints = append(endpoints, v.Address)
+		for i, v := range service.Nodes {
+			endpoints[i] = v.Address
 		}
 		sn := &registry.ServiceInstance{
 			Name:      service.Name,
