@@ -94,6 +94,7 @@ func (r *EtcdRegister) heartBeat(ctx context.Context) {
 		r.logger.Errorf("KeepAlive occur err:%s", err.Error())
 		return
 	}
+	//TODO reconnect
 	for {
 		select {
 		case _, ok := <-kac:
@@ -184,6 +185,7 @@ func (r *EtcdRegister) Register(ctx context.Context, service *registry.ServiceIn
 			Address: node,
 		}
 		s.Nodes = append(s.Nodes, n)
+		//TODO retry
 		err = r.registerNode(ctx, s, n)
 		if err != nil {
 			return err
@@ -342,4 +344,14 @@ func (r *EtcdDiscovery) GetService(ctx context.Context, serviceName string) ([]*
 func (r *EtcdDiscovery) Watch(ctx context.Context, serviceName string) (registry.Watcher, error) {
 	w, err := newEtcdWatcher(ctx, serviceName, r.client, r.options.Timeout)
 	return w, err
+}
+
+func (r *EtcdDiscovery) Close() error {
+	if r.client != nil {
+		err := r.client.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
