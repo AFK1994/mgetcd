@@ -45,6 +45,9 @@ func configure(e *MgetcdClient, opts ...Option) error {
 	e.dic = dic
 
 	selector := &Selector{strategy: e.options.Strategy}
+	if selector.strategy == nil {
+		selector.strategy = &RandomStrategy{}
+	}
 	e.selector = selector
 	return nil
 }
@@ -62,7 +65,7 @@ func (c *MgetcdClient) Invoke(ctx context.Context, service, method string, args,
 	var gc *grpc.ClientConn
 	c.RLock()
 	gcs, ok := c.pool[service]
-	c.Unlock()
+	c.RUnlock()
 	//TODO connections
 	if ok && len(gcs) > 0 {
 		gc = gcs[0]
