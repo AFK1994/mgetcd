@@ -33,6 +33,7 @@ func decode(ds []byte) *Service {
 	json.Unmarshal(ds, &s)
 	return s
 }
+
 func nodePath(s, id string) string {
 	service := strings.Replace(s, "/", "-", -1)
 	node := strings.Replace(id, "/", "-", -1)

@@ -19,6 +19,7 @@ type EtcdRegister struct {
 	sync.RWMutex
 	leaseId  clientv3.LeaseID
 	register []string
+	service  *registry.ServiceInstance
 	logger   *log.Helper
 }
 
@@ -75,7 +76,7 @@ func configureRegistry(e *EtcdRegister, opts ...Option) error {
 		}
 	}
 
-	// if we got addrs then we'll update
+	// 更新地址
 	if len(cAddrs) > 0 {
 		config.Endpoints = cAddrs
 	}
@@ -94,29 +95,37 @@ func (r *EtcdRegister) heartBeat(ctx context.Context) {
 		r.logger.Errorf("KeepAlive occur err:%s", err.Error())
 		return
 	}
-	//TODO reconnect
+
 	for {
 		select {
 		case _, ok := <-kac:
 			if !ok {
-				continue
+				r.logger.Error("heartBeat broken registerNode")
+				// 重新注册
+				r.leaseId = 0
+				err = r.Register(context.Background(), r.service)
+				if err != nil {
+					r.logger.Errorf("Register occur err:%s", err.Error())
+					err = nil
+					continue
+				}
+				return
 			}
-			//r.logger.Debugf("heartBeat LeaseID:%d",msg.ID)
+			//r.logger.Debugf("heartBeat msg:%s",msg.String())
 		}
 	}
 }
 
 func (r *EtcdRegister) registerNode(ctx context.Context, s *Service, node *Node) error {
 	if len(s.Nodes) == 0 || node == nil {
-		r.logger.Errorf("Require at least one node")
-		return errors.New("Require at least one node")
+		r.logger.Errorf("require at least one node")
+		return errors.New("require at least one node")
 	}
 
-	// missing lease, check if the key exists
+	// 检查节点是否已存在
 	ctx1, cancel1 := context.WithTimeout(ctx, r.options.Timeout)
 	defer cancel1()
 
-	// look for the existing key
 	rsp, err := r.client.Get(ctx1, nodePath(s.Name, node.Id), clientv3.WithSerializable())
 	if err != nil {
 		return err
@@ -139,7 +148,7 @@ func (r *EtcdRegister) registerNode(ctx context.Context, s *Service, node *Node)
 			ttl int64
 		)
 		ttl = int64(r.options.TTL.Seconds())
-		// get a lease used to expire keys since we have a ttl
+		// 创建租赁
 		lgr, err = r.client.Grant(ctx, ttl)
 		if err != nil {
 			return err
@@ -149,7 +158,7 @@ func (r *EtcdRegister) registerNode(ctx context.Context, s *Service, node *Node)
 		}
 		ctx2, cancel2 := context.WithTimeout(ctx, r.options.Timeout)
 		defer cancel2()
-		// create an entry for the node
+		// 注册节点
 		r.logger.Debugf(nodePath(service.Name, node.Id))
 		_, err = r.client.Put(ctx2, nodePath(service.Name, node.Id), encode(service), clientv3.WithLease(lgr.ID))
 		if err != nil {
@@ -159,16 +168,26 @@ func (r *EtcdRegister) registerNode(ctx context.Context, s *Service, node *Node)
 	}
 
 	r.Lock()
-	// save the service
+	// 保存
 	r.register = append(r.register, node.Id)
 	r.Unlock()
 	return nil
 }
 
 func (r *EtcdRegister) Register(ctx context.Context, service *registry.ServiceInstance) error {
-	if len(service.Endpoints) == 0 {
-		r.logger.Errorf("Require at least one node")
-		return errors.New("Require at least one node")
+	endpoints := make([]string, 0)
+	for _, node := range service.Endpoints {
+		addr, err := ParseEndpoint(node, "grpc")
+		if err != nil {
+			return err
+		}
+		if len(addr) > 0 {
+			endpoints = append(endpoints, addr)
+		}
+	}
+	if len(endpoints) == 0 {
+		r.logger.Errorf("require at least one node")
+		return errors.New("require at least one node")
 	}
 
 	var err error
@@ -178,21 +197,37 @@ func (r *EtcdRegister) Register(ctx context.Context, service *registry.ServiceIn
 		Metadata: service.Metadata,
 	}
 
-	// register each node individually
-	for _, node := range service.Endpoints {
+	//Metadata抄的go-microv2
+	s.Metadata["broker"] = "http"
+	s.Metadata["protocol"] = "grpc"
+	s.Metadata["registry"] = "etcd"
+	s.Metadata["server"] = "grpc"
+	s.Metadata["transport"] = "grpc"
+	// 单独注册每个节点
+	for _, node := range endpoints {
 		n := &Node{
 			Id:      service.Name + "-" + uuid.New().String(),
 			Address: node,
 		}
 		s.Nodes = append(s.Nodes, n)
-		//TODO retry
-		err = r.registerNode(ctx, s, n)
-		if err != nil {
-			return err
+		// 重试3次
+		for retry := 0; retry < 3; retry++ {
+			err = r.registerNode(ctx, s, n)
+			if err != nil {
+				r.logger.Errorf("registerNode id[%s] occur err:%s", n.Id, err.Error())
+				if retry == 2 {
+					return err
+				}
+				err = nil
+				continue
+			}
+			break
 		}
 	}
 
-	// heart beat
+	r.service = service
+
+	// 开启心跳维护线程
 	go r.heartBeat(ctx)
 	return nil
 }
@@ -206,7 +241,7 @@ func (r *EtcdRegister) Deregister(ctx context.Context, service *registry.Service
 	r.Lock()
 	defer r.Unlock()
 	for _, nodeId := range r.register {
-		// delete the service
+		// 删除节点
 		_, err := r.client.Delete(ctx, nodePath(service.Name, nodeId))
 		if err != nil {
 			return err
@@ -278,7 +313,7 @@ func configureDiscovery(e *EtcdDiscovery, opts ...Option) error {
 		}
 	}
 
-	// if we got addrs then we'll update
+	// 更新地址
 	if len(cAddrs) > 0 {
 		config.Endpoints = cAddrs
 	}

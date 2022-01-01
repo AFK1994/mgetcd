@@ -5,6 +5,7 @@ import (
 	"math/rand"
 )
 
+//随机策略
 type RandomStrategy struct {
 }
 

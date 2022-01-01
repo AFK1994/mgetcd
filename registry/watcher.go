@@ -8,32 +8,34 @@ import (
 	"time"
 )
 
-type etcdWatcher struct {
+type EtcdWatcher struct {
 	w           clientv3.WatchChan
 	client      *clientv3.Client
 	timeout     time.Duration
 	cancel      context.CancelFunc
 	first       bool
 	serviceName string
+	stop        chan int
 }
 
 func newEtcdWatcher(ctx context.Context, serviceName string, client *clientv3.Client, timeout time.Duration) (registry.Watcher, error) {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx1, cancel := context.WithCancel(ctx)
 
-	return &etcdWatcher{
-		w:           client.Watch(ctx, servicePath(serviceName), clientv3.WithPrefix(), clientv3.WithPrevKV()),
+	return &EtcdWatcher{
+		w:           client.Watch(ctx1, servicePath(serviceName), clientv3.WithPrefix(), clientv3.WithPrevKV()),
 		client:      client,
 		timeout:     timeout,
 		cancel:      cancel,
 		first:       true,
 		serviceName: serviceName,
+		stop:        make(chan int, 1),
 	}, nil
 }
 
-func (w *etcdWatcher) getInstance() ([]*registry.ServiceInstance, error) {
+func (w *EtcdWatcher) getInstance() ([]*registry.ServiceInstance, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
-	resp, err := w.client.Get(ctx, servicePath(w.serviceName), clientv3.WithPrefix())
+	resp, err := w.client.Get(ctx, servicePath(w.serviceName), clientv3.WithPrefix(), clientv3.WithSerializable())
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +59,7 @@ func (w *etcdWatcher) getInstance() ([]*registry.ServiceInstance, error) {
 	return items, nil
 }
 
-func (w *etcdWatcher) Next() ([]*registry.ServiceInstance, error) {
+func (w *EtcdWatcher) Next() ([]*registry.ServiceInstance, error) {
 	var (
 		err      error
 		services []*registry.ServiceInstance
@@ -71,58 +73,66 @@ func (w *etcdWatcher) Next() ([]*registry.ServiceInstance, error) {
 		return services, nil
 	}
 	for wresp := range w.w {
+		select {
+		case <-w.stop:
+			return nil, errors.New("watcher done")
+		default:
+		}
 		if wresp.Err() != nil {
 			return nil, wresp.Err()
 		}
 		if wresp.Canceled {
 			return nil, errors.New("could not get next")
 		}
-		for _, ev := range wresp.Events {
-			service := decode(ev.Kv.Value)
-
-			switch ev.Type {
-			case clientv3.EventTypePut:
-				endpoints := make([]string, len(service.Nodes))
-				for _, v := range service.Nodes {
-					endpoints = append(endpoints, v.Address)
-				}
-				sn := &registry.ServiceInstance{
-					Name:      service.Name,
-					Version:   service.Version,
-					Metadata:  service.Metadata,
-					Endpoints: endpoints,
-				}
-				services = append(services, sn)
-				break
-			case clientv3.EventTypeDelete:
-				// get service from prevKv
-				service = decode(ev.PrevKv.Value)
-				endpoints := make([]string, len(service.Nodes))
-				for _, v := range service.Nodes {
-					endpoints = append(endpoints, v.Address)
-				}
-				sn := &registry.ServiceInstance{
-					Name:      service.Name,
-					Version:   service.Version,
-					Metadata:  service.Metadata,
-					Endpoints: endpoints,
-				}
-				services = append(services, sn)
-				break
-			}
-
-			if service == nil {
-				continue
-			}
+		services, err = w.getInstance()
+		if err != nil {
+			return nil, err
 		}
-	}
-	if len(services) == 0 {
-		return nil, errors.New("could not get next")
+		return services, nil
+		//for _, ev := range wresp.Events {
+		//	service := decode(ev.Kv.Value)
+		//
+		//	switch ev.Type {
+		//	case clientv3.EventTypePut:
+		//		endpoints := make([]string, len(service.Nodes))
+		//		for _, v := range service.Nodes {
+		//			endpoints = append(endpoints, v.Address)
+		//		}
+		//		sn := &registry.ServiceInstance{
+		//			Name:      service.Name,
+		//			Version:   service.Version,
+		//			Metadata:  service.Metadata,
+		//			Endpoints: endpoints,
+		//		}
+		//		services = append(services, sn)
+		//		break
+		//	case clientv3.EventTypeDelete:
+		//		// get service from prevKv
+		//		service = decode(ev.PrevKv.Value)
+		//		endpoints := make([]string, len(service.Nodes))
+		//		for _, v := range service.Nodes {
+		//			endpoints = append(endpoints, v.Address)
+		//		}
+		//		sn := &registry.ServiceInstance{
+		//			Name:      service.Name,
+		//			Version:   service.Version,
+		//			Metadata:  service.Metadata,
+		//			Endpoints: endpoints,
+		//		}
+		//		services = append(services, sn)
+		//		break
+		//	}
+		//
+		//	if service == nil {
+		//		continue
+		//	}
+		//}
 	}
 	return services, nil
 }
 
-func (w *etcdWatcher) Stop() error {
+func (w *EtcdWatcher) Stop() error {
 	w.cancel()
+	w.stop <- 1
 	return nil
 }

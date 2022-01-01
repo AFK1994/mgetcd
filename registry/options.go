@@ -12,9 +12,7 @@ type Options struct {
 	Secure    bool
 	TLSConfig *tls.Config
 	TTL       time.Duration
-	// Other options for implementations of the interface
-	// can be stored in a context
-	Context context.Context
+	Context   context.Context
 }
 
 type Option func(*Options)
