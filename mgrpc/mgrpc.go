@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/AFK/mgetcd/registry"
+	"github.com/AFK1994/mgetcd/registry"
 	"github.com/go-kratos/kratos/v2/log"
 	krareg "github.com/go-kratos/kratos/v2/registry"
 	"google.golang.org/grpc"

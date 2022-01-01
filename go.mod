@@ -1,4 +1,4 @@
-module github.com/AFK/mgetcd
+module github.com/AFK1994/mgetcd
 
 go 1.16
 
